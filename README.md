@@ -1,9 +1,9 @@
 # WindfarmLayoutOptimization
 
-WFLO
+(WFLO)
 All the code for WFLO (Jansen wake model) using quantum computing. The methods included are VQE-based, PCE-based, and exhaustive check.
 
-==============================================================================================
+===========================================================================
 
 This project will require the following packages to run:
 - numpy
@@ -13,7 +13,7 @@ This project will require the following packages to run:
 - itertools
 - matplotlib
 
-==============================================================================================
+===========================================================================
 
 Project runs from main.py, controlled by a set of parameters. Below is a description of these parameters.
 
