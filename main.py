@@ -4,7 +4,6 @@ Packages
 '''
 from re import L
 import numpy as np
-#import matplotlib.pyplot as plt
 import os
 import sys
 import concurrent.futures
@@ -17,8 +16,6 @@ Modules
 from oldBayesian import BayesianOptimization
 from windfarmQUBO import *
 from variationalQuantumEigensolver import *
-#from pauliCorrelationEncoding import *
-#from solvers import *
 from extras import *
 
 print("At least its working")
