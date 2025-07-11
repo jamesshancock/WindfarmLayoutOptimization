@@ -112,12 +112,6 @@ Project runs from main.py, controlled by a set of parameters. Below is a descrip
 'bayesSigma': Float
 - Sigma hyperparameter for Bayesian kernel.
 - Recommended: 1000.0.
-- See: https://arxiv.org/abs/2406.06150
-
-'bayesGamma': Float
-- Gamma hyperparameter for Bayesian kernel.
-- Recommended: 0.01.
-- See: https://arxiv.org/abs/2406.06150
 
 'bayesIters': Integer
 - Number of steps in Bayesian optimization.
