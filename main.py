@@ -63,71 +63,6 @@ parameters = {
 
 # TEST ZONE
 # =============================================================================
-def vqeSolver(parameters):
-    parameters['nVQE'] = parameters['len_grid'] * parameters['len_grid']
-    parameters['nParaVQE'], parameters['nLayersVQE'] = NParaVQE(parameters['nVQE'])
-    h = QuboToVQE(WindfarmQ(parameters), parameters)
-    parameters['hVQE'] = h
-    #print("Number of qubits required:", parameters['nVQE'])
-
-    # Create the parameterized circuit
-    parametric_circuit, theta_params = create_parametric_circuitVQE(parameters['nVQE'], parameters['nLayersVQE'])
-    theta = [np.pi * np.random.uniform(0, 2) for _ in range(parameters['nParaVQE'])]
-
-    history = []
-    L = parameters.get('L', 10)  # Default value for L if not provided
-    tol = parameters.get('tol', 1e-4)  # Default tolerance if not provided
-    paras = []
-    timeTaken = 0
-
-    backend = AerSimulator()
-
-    session = 'hello'
-
-    def cost_function(theta, *args, **kwargs):
-        value = cvarVQE(theta, parameters, session, backend, parametric_circuit, theta_params)
-        return value
-
-    timePerIter = []
-    start = [time.perf_counter()]  # Use a list for mutability
-
-    def callback(xk):
-        end = time.perf_counter()
-        timePerIter.append(end - start[0])  # Time since last callback (i.e., last iteration)
-        start[0] = end  # Update for next iteration
-        print("Time taken for iter", len(history), ":", timePerIter[-1])
-
-        parameters['talpha'] *= 1e4
-        theta = xk
-        value = cost_function(theta)
-        history.append(value)
-        parameters['talpha'] /= 1e4
-        paras.append(theta)
-        if len(history) >= L:
-            lowestLTerms = sorted(history)[:L]
-            avRecents = sum(lowestLTerms)/len(lowestLTerms)
-            last = history[-1]
-            avg_change = abs(avRecents - last)
-            if avg_change <= tol and len(history) > parameters['miniter']:
-                raise StopIteration("Stopping criterion met: average change <= tol")
-
-
-    tok = time.perf_counter()
-    try:
-        mini = minimize(cost_function, theta, method='COBYLA', options={'maxiter': parameters['maxiter']}, callback=callback)
-    except StopIteration as e:
-        print(e)
-        mini = type('obj', (object,), {'x': theta})
-    tik = time.perf_counter()
-    print("Total iterations: ", len(history))
-    finalParas = paras[np.argmin(history)]
-    solution = thetaToSolutionVQE(finalParas, parameters)
-    timeTaken = tik - tok
-    return solution, history, timeTaken, timePerIter
-
-TimesPerItersCOBYLA = []
-TimesPerItersBayes = []
-print("Code running")
 
 Q = WindfarmQ(parameters)
 parameters['nVQE'] = parameters['len_grid'] * parameters['len_grid']
@@ -135,18 +70,8 @@ parameters['nParaVQE'], parameters['nLayersVQE'] = NParaVQE(parameters['nVQE'])
 h = QuboToVQE(Q, parameters)
 parameters['hVQE'] = h
 
-num_cores = concurrent.futures.ProcessPoolExecutor()._max_workers
-total_samples = num_cores
-print("Number of cores available:", num_cores)
-
-if __name__ == "__main__":
-    print("In here")
-
-    with concurrent.futures.ProcessPoolExecutor() as executor:
-        futures = [executor.submit(BayesianOptimization, parameters) for _ in range(total_samples)]
-        for future in concurrent.futures.as_completed(futures):
-            solution, bestX, timePerIter = future.result()
-            TimesPerItersBayes.append(timePerIter)
-
-    print("Bayes time per iter:", TimesPerItersBayes)
-    print("COBYLA time per iter:", TimesPerItersCOBYLA)
+energies, histories, timeTakens, solutions = runForSamples(parameters)
+print("energies=",energies)
+print("histories=",histories)
+print("timeTakens=",timeTakens)
+print("solutions=",solutions)
