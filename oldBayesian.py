@@ -89,6 +89,7 @@ def BayesianOptimization(parameters):
     #noise = np.std(noisedata)
     noise = 0.1
     timePerIter = []
+    tokTotal = time.perf_counter()
     for kb in range(BITS):
         tok = time.perf_counter()
         percent = ((kb + 1) / BITS) * 100
@@ -114,5 +115,7 @@ def BayesianOptimization(parameters):
         timePerIter.append(tik - tok)
         print("Time for iter", kb, ":", tik - tok)
     xi = np.argmin(ydata)
+    tikTotal = time.perf_counter()
+    timeTaken = tikTotal - tokTotal
     solution = thetaToSolutionVQE(xdata[xi], parameters)
-    return solution, xbests, timePerIter
+    return solution, xbests, timeTaken, timePerIter
