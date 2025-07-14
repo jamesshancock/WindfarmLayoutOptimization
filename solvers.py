@@ -10,12 +10,12 @@ import concurrent.futures
 import time
 from qiskit_ibm_runtime import Session, QiskitRuntimeService
 
-
 from extras import *
 from windfarmQUBO import *
 from variationalQuantumEigensolver import *
 from pauliCorrelationEncoding import *
 from efficientSolver import *
+from oldBayesian import *
 
 def NParaPCE(n):
     k = 1
@@ -26,49 +26,6 @@ def NParaPCE(n):
     print("Number of parameters:", 2 * n * k)
     print("Number of layers:", k)
     return 2 * n * k, k
-
-class CustomKernel(Kernel):
-    def __init__(self, sigma, gamma):
-        self.sigma = sigma
-        self.gamma = gamma
-
-    @property
-    def hyperparameter_gamma(self):
-        return Hyperparameter("gamma", "numeric", "fixed")
-
-    def __call__(self, X, Y=None, eval_gradient=False):
-        if Y is None:
-            Y = X
-        K = np.zeros((X.shape[0], Y.shape[0]))
-        for i, x in enumerate(X):
-            for j, y in enumerate(Y):
-                prod = 1
-                for d in range(len(x)):
-                    prod *= (self.gamma**2 + 2 * np.cos(x[d] - y[d])) / (self.gamma**2 + 2)
-                K[i, j] = self.sigma**2 * prod
-        if eval_gradient:
-            # Gradient is not implemented for this custom kernel
-            return K, np.zeros((X.shape[0], Y.shape[0], 0))
-        return K
-
-    def diag(self, X):
-        return np.full(X.shape[0], self.sigma**2)
-
-    def is_stationary(self):
-        return False
-
-class CustomGPR(GaussianProcessRegressor):
-    def predict(self, X, return_std=False, return_cov=False, return_mean_grad=False, return_std_grad=False):
-        predictions = super().predict(X, return_std=return_std, return_cov=return_cov)
-        if return_mean_grad or return_std_grad:
-            # Dummy gradients for demonstration purposes
-            mean_grad = np.zeros_like(X)
-            std_grad = np.zeros_like(X)
-            if return_std:
-                return predictions[0], predictions[1], mean_grad, std_grad
-            else:
-                return predictions, mean_grad, std_grad
-        return predictions
 
 def printFaff(parameters):
     '''
@@ -205,30 +162,15 @@ def quantumSolver(parameters):
             print(e)
             mini = type('obj', (object,), {'x': theta})
     elif parameters['method'] == 'Bayesian':
-        sigma = parameters['bayesSigma']
-        gamma = parameters['bayesGamma']
-        custom_kernel = CustomKernel(sigma, gamma)
-        gpr = CustomGPR(kernel=custom_kernel)
-        if parameters['solver'] == 'VQE':
-            param_space = [Real(0, 2 * np.pi, name=f'theta_{i}') for i in range(parameters['nParaVQE'])]
-        elif parameters['solver'] == 'PCE':
-            param_space = [Real(0, 2 * np.pi, name=f'theta_{i}') for i in range(parameters['nParaPCE'])]
-
-        @use_named_args(param_space)
-        def objective_function(**thetaObj):
-            thetaListObj = [thetaObj[f'theta_{i}'] for i in range(len(thetaObj))]
-            result = cost_function(thetaListObj)
-            return result
-        try:
-            res = gp_minimize(objective_function, param_space, acq_func='EI', n_calls=parameters['bayesIters'], callback=[callback], base_estimator=gpr)
-        except StopIteration as e:
-            print(e)
+        solution, xbests, _, _ = BayesianOptimization(parameters)
+        history = [np.array(s).T @ Q @ np.array(s) for s in xbests]
+        
     tik = time.perf_counter()
     print("Total iterations: ", len(history))
     finalParas = paras[np.argmin(history)]
-    if parameters['solver'] == 'VQE':
+    if parameters['solver'] == 'VQE' and parameters['method'] != 'Bayesian':
         solution = thetaToSolutionVQE(finalParas, parameters)
-    elif parameters['solver'] == 'PCE' or 'combinedPCE':
+    elif parameters['solver'] == 'PCE' or 'combinedPCE' and parameters['method'] != 'Bayesian':
         solution = thetaToSolutionPCE(finalParas, parameters, keys, session, backend, parametric_circuit, theta_params)
     print("Final cost: ", min(history))
     print("Total circuit calls:", len(history)*simsPerRun)
@@ -325,59 +267,66 @@ def runForSamplesParallel(parameters):
 
     return energies, histories, timeTakens, solutions
 
+def vqeSolver2(parameters):
+    parameters['nVQE'] = parameters['len_grid'] * parameters['len_grid']
+    parameters['nParaVQE'], parameters['nLayersVQE'] = NParaVQE(parameters['nVQE'])
+    h = QuboToVQE(WindfarmQ(parameters), parameters)
+    parameters['hVQE'] = h
+    #print("Number of qubits required:", parameters['nVQE'])
 
-'''
-    if parameters['machine'] == 'realSession':
-        with Session(backend=backend) as session:
-            if parameters['solver'] == 'VQE':
-                theta = [np.pi * np.random.uniform(0, 2) for _ in range(parameters['nParaVQE'])]
-            elif parameters['solver'] == 'PCE':
-                theta = [np.pi * np.random.uniform(0, 2) for _ in range(parameters['nParaPCE'])]
+    # Create the parameterized circuit
+    parametric_circuit, theta_params = create_parametric_circuitVQE(parameters['nVQE'], parameters['nLayersVQE'])
+    theta = [np.pi * np.random.uniform(0, 2) for _ in range(parameters['nParaVQE'])]
 
-            tok = time.perf_counter()
-            if parameters['method'] == 'COBYLA' or 'SLSQP':
-                try:
-                    def cost_function(theta):
-                        if parameters['solver'] == 'VQE':
-                            value = cvarVQE(theta, parameters, session, backend, parametric_circuit, theta_params)
-                        elif parameters['solver'] == 'PCE':
-                            value = PCE(theta, parameters, keys, Jprime, hPCE, session, backend, parametric_circuit, theta_params)
-                        print(value)
-                        return value
+    history = []
+    L = parameters.get('L', 10)  # Default value for L if not provided
+    tol = parameters.get('tol', 1e-4)  # Default tolerance if not provided
+    paras = []
+    timeTaken = 0
 
-                    mini = minimize(cost_function, theta, method=parameters['method'], callback=callback, options={'maxiter': 10, 'maxfun': 10})
-                except StopIteration as e:
-                    print(e)
-                    mini = type('obj', (object,), {'x': theta})
-            elif parameters['method'] == 'Bayesian':
-                sigma = parameters['bayesSigma']
-                gamma = parameters['bayesGamma']
-                custom_kernel = CustomKernel(sigma, gamma)
-                gpr = CustomGPR(kernel=custom_kernel)
-                if parameters['solver'] == 'VQE':
-                    param_space = [Real(0, 2 * np.pi, name=f'theta_{i}') for i in range(parameters['nParaVQE'])]
-                elif parameters['solver'] == 'PCE':
-                    param_space = [Real(0, 2 * np.pi, name=f'theta_{i}') for i in range(parameters['nParaPCE'])]
+    backend = AerSimulator()
 
-                @use_named_args(param_space)
-                def objective_function(**thetaObj):
-                    thetaListObj = [thetaObj[f'theta_{i}'] for i in range(len(thetaObj))]
-                    if parameters['solver'] == 'VQE':
-                        result = cvarVQE(thetaListObj, parameters, session, backend, parametric_circuit, theta_params)
-                    elif parameters['solver'] == 'PCE':
-                        result = PCE(thetaListObj, parameters, keys, Jprime, hPCE, session, backend, parametric_circuit, theta_params)
-                    return result
-                try:
-                    res = gp_minimize(objective_function, param_space, acq_func='EI', n_calls=parameters['bayesIters'], callback=[callback], base_estimator=gpr)
-                except StopIteration as e:
-                    print(e)
-            tik = time.perf_counter()
-            print("Total iterations: ", len(history))
-            finalParas = paras[np.argmin(history)]
-            if parameters['solver'] == 'VQE':
-                solution = thetaToSolutionVQE(finalParas, parameters)
-            elif parameters['solver'] == 'PCE':
-                solution = thetaToSolutionPCE(finalParas, parameters, keys, session, backend, parametric_circuit, theta_params)
-            print("Final cost: ", min(history))
-            timeTaken = tik - tok
-    '''
+    session = 'hello'
+
+    def cost_function(theta, *args, **kwargs):
+        value = cvarVQE(theta, parameters, session, backend, parametric_circuit, theta_params)
+        return value
+
+    timePerIter = []
+    start = [time.perf_counter()]  # Use a list for mutability
+
+    def callback(xk):
+        end = time.perf_counter()
+        timePerIter.append(end - start[0])  # Time since last callback (i.e., last iteration)
+        start[0] = end  # Update for next iteration
+        print("Time taken for iter", len(history), ":", timePerIter[-1])
+
+        parameters['talpha'] *= 1e4
+        theta = xk
+        value = cost_function(theta)
+        history.append(value)
+        parameters['talpha'] /= 1e4
+        paras.append(theta)
+        if len(history) >= L:
+            lowestLTerms = sorted(history)[:L]
+            avRecents = sum(lowestLTerms)/len(lowestLTerms)
+            last = history[-1]
+            avg_change = abs(avRecents - last)
+            if avg_change <= tol and len(history) > parameters['miniter']:
+                raise StopIteration("Stopping criterion met: average change <= tol")
+
+
+    tok = time.perf_counter()
+    try:
+        mini = minimize(cost_function, theta, method='COBYLA', options={'maxiter': parameters['maxiter']}, callback=callback)
+    except StopIteration as e:
+        print(e)
+        mini = type('obj', (object,), {'x': theta})
+    tik = time.perf_counter()
+    print("Total iterations: ", len(history))
+    finalParas = paras[np.argmin(history)]
+    solution = thetaToSolutionVQE(finalParas, parameters)
+    timeTaken = tik - tok
+    return solution, history, timeTaken, timePerIter
+print("Code running")
+
